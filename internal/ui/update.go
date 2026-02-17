@@ -2,16 +2,18 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"go-manga-ripper/internal/domain"
-	"go-manga-ripper/internal/downloader"
-	"go-manga-ripper/internal/scraper"
+	"mangadl/internal/domain"
+	"mangadl/internal/downloader"
+	"mangadl/internal/scraper"
 )
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -38,11 +40,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case StatusSelection:
-			if m.List.FilterState() == list.Filtering {
-				break // Let list handle inputs
+			// Handle Filter Input
+			if m.FilterInput.Focused() {
+				switch msg.Type {
+				case tea.KeyEnter, tea.KeyEsc:
+					m.FilterInput.Blur()
+					return m, nil
+				}
+
+				var cmd tea.Cmd
+				m.FilterInput, cmd = m.FilterInput.Update(msg)
+				m.updateFilteredChapters()
+				return m, cmd
 			}
 
 			switch msg.String() {
+			case "/":
+				m.FilterInput.Focus()
+				return m, textinput.Blink
+
 			case "enter":
 				// Start Download
 				chapters := m.getSelectedChapters()
@@ -56,23 +72,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 			case " ":
-				if i, ok := m.List.SelectedItem().(domain.Chapter); ok {
-					if _, exists := m.Selected[i.ID]; exists {
-						delete(m.Selected, i.ID)
-					} else {
-						m.Selected[i.ID] = struct{}{}
+				if len(m.FilteredChapters) > 0 {
+					idx := m.SelectionCursor
+					if idx >= 0 && idx < len(m.FilteredChapters) {
+						c := m.FilteredChapters[idx]
+						if _, exists := m.Selected[c.ID]; exists {
+							delete(m.Selected, c.ID)
+						} else {
+							m.Selected[c.ID] = struct{}{}
+						}
 					}
 				}
 
 			case "a":
-				// Toggle All
-				if len(m.Selected) == len(m.Manga.Chapters) {
-					m.Selected = make(map[int]struct{})
+				// Toggle All (visible)
+				allSelected := true
+				for _, c := range m.FilteredChapters {
+					if _, ok := m.Selected[c.ID]; !ok {
+						allSelected = false
+						break
+					}
+				}
+
+				if allSelected {
+					for _, c := range m.FilteredChapters {
+						delete(m.Selected, c.ID)
+					}
 				} else {
-					for _, c := range m.Manga.Chapters {
+					for _, c := range m.FilteredChapters {
 						m.Selected[c.ID] = struct{}{}
 					}
 				}
+
+			// Grid Navigation
+			case "up", "k":
+				m.moveCursor(-m.SelectionColumns)
+			case "down", "j":
+				m.moveCursor(m.SelectionColumns)
+			case "left", "h":
+				m.moveCursor(-1)
+			case "right", "l":
+				m.moveCursor(1)
 			}
 
 		case StatusDone:
@@ -85,9 +125,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Width = msg.Width
 		m.Height = msg.Height
 
-		// Resize List
-		h, v := DocStyle.GetFrameSize()
-		m.List.SetSize(msg.Width-h, msg.Height-v-2)
+		// Recalculate layout
+		m.recalcLayout()
 
 		// Resize Progress
 		targetWidth := (m.Width / 2) - 10
@@ -96,26 +135,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.Progress.Width = targetWidth
 
-		// Resize Viewport
-		m.Viewport.Width = msg.Width - 10
-		m.Viewport.Height = msg.Height - 15
-
 	case MangaFetchedMsg:
 		m.Manga = msg
 		m.State = StatusSelection
+		m.FilteredChapters = m.Manga.Chapters
+		m.SelectionCursor = 0
+		m.recalcLayout()
 
-		items := make([]list.Item, len(m.Manga.Chapters))
-		for i, c := range m.Manga.Chapters {
-			c.ID = i // Ensure ID matches index
-			items[i] = c
-			// Default: Select All
+		// Default: Select All
+		m.Selected = make(map[int]struct{})
+		for _, c := range m.Manga.Chapters {
 			m.Selected[c.ID] = struct{}{}
 		}
-		m.List.SetItems(items)
-
-		// Update delegate reference
-		d := ChapterDelegate{Selected: m.Selected}
-		m.List.SetDelegate(d)
 
 	case ErrMsg:
 		m.Err = msg
@@ -124,9 +155,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ProgressMsg:
 		if msg.Done == -1 {
 			m.DoneChapters++
-		} else {
+		} else if msg.Done >= 0 {
 			m.DoneChapters = msg.Done
 		}
+		// If msg.Done == -2, do not change DoneChapters
 
 		if msg.Message != "" {
 			m.CurrentStatus = msg.Message
@@ -162,14 +194,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
-	if m.State == StatusSelection {
-		m.List, cmd = m.List.Update(msg)
-		cmds = append(cmds, cmd)
-	}
-
 	if m.State == StatusDownloading {
 		m.Spinner, cmd = m.Spinner.Update(msg)
 		cmds = append(cmds, cmd)
+
+		// Update progress bar (animations, resizing, etc)
+		var pCmd tea.Cmd
+		var pModel tea.Model
+		pModel, pCmd = m.Progress.Update(msg)
+		m.Progress = pModel.(progress.Model)
+		cmds = append(cmds, pCmd)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -193,7 +227,6 @@ func startDownload(chapters []domain.Chapter, title string) tea.Cmd {
 	go func() {
 		mangaDir := downloader.SanitizeFilename(title)
 		total := len(chapters)
-		completed := 0
 
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, 10) // Concurrency limit
@@ -205,7 +238,7 @@ func startDownload(chapters []domain.Chapter, title string) tea.Cmd {
 				sem <- struct{}{}
 
 				select {
-				case downloadChan <- ProgressMsg{Done: completed, Total: total, Message: fmt.Sprintf("Started: %s", ch.Name)}:
+				case downloadChan <- ProgressMsg{Done: -2, Total: total, Message: fmt.Sprintf("Started: %s", ch.Name)}:
 				default:
 				}
 
@@ -254,5 +287,91 @@ func (m *Model) addLog(msg string) {
 	maxLogs := 20
 	if len(m.Logs) > maxLogs {
 		m.Logs = m.Logs[len(m.Logs)-maxLogs:]
+	}
+}
+
+func (m *Model) recalcLayout() {
+	if m.Width == 0 {
+		return
+	}
+
+	// Layout params
+	availableWidth := m.Width - 4 // DocStyle padding
+	minItemWidth := 35            // Slight increase for better readability
+
+	cols := availableWidth / minItemWidth
+	if cols < 1 {
+		cols = 1
+	}
+
+	m.SelectionColumns = cols
+
+	// Ensure cursor is valid
+	if len(m.FilteredChapters) > 0 {
+		if m.SelectionCursor >= len(m.FilteredChapters) {
+			m.SelectionCursor = len(m.FilteredChapters) - 1
+		}
+		if m.SelectionCursor < 0 {
+			m.SelectionCursor = 0
+		}
+	}
+
+	// Recalculate offset to ensure cursor is visible
+	m.moveCursor(0)
+}
+
+func (m *Model) updateFilteredChapters() {
+	if m.FilterInput.Value() == "" {
+		m.FilteredChapters = m.Manga.Chapters
+	} else {
+		filter := strings.ToLower(m.FilterInput.Value())
+		var res []domain.Chapter
+		for _, c := range m.Manga.Chapters {
+			if strings.Contains(strings.ToLower(c.Name), filter) {
+				res = append(res, c)
+			}
+		}
+		m.FilteredChapters = res
+	}
+	m.SelectionCursor = 0
+	m.recalcLayout()
+}
+
+func (m *Model) moveCursor(delta int) {
+	if len(m.FilteredChapters) == 0 {
+		return
+	}
+
+	newCursor := m.SelectionCursor + delta
+	if newCursor < 0 {
+		newCursor = 0
+	}
+	if newCursor >= len(m.FilteredChapters) {
+		newCursor = len(m.FilteredChapters) - 1
+	}
+	m.SelectionCursor = newCursor
+
+	// Handle scrolling
+	// Calculate visible rows
+	// Header (1) + Footer (1) + DocPadding (2) = 4
+	// Filter bar takes space if visible
+	// Let's assume ~5 lines of overhead
+
+	overhead := 5
+	// If filter is shown (it's always shown in grid view header?)
+
+	visibleRows := m.Height - overhead
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+
+	currentRow := m.SelectionCursor / m.SelectionColumns
+
+	if currentRow < m.SelectionOffset {
+		m.SelectionOffset = currentRow
+	}
+
+	if currentRow >= m.SelectionOffset+visibleRows {
+		m.SelectionOffset = currentRow - visibleRows + 1
 	}
 }

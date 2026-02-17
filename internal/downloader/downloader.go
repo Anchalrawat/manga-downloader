@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"sync"
 
-	"go-manga-ripper/internal/config"
-	"go-manga-ripper/internal/domain"
-	"go-manga-ripper/internal/scraper"
+	"mangadl/internal/config"
+	"mangadl/internal/domain"
+	"mangadl/internal/scraper"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/valyala/fasthttp"

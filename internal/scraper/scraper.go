@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
-	"go-manga-ripper/internal/config"
-	"go-manga-ripper/internal/domain"
+	"mangadl/internal/config"
+	"mangadl/internal/domain"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -42,11 +44,17 @@ func FetchMangaDetails(mangaURL string) (*domain.MangaDetails, error) {
 	seenChapters := make(map[string]bool)
 	chapterRegex := regexp.MustCompile(`/manga/.*/c\d+`)
 
-	doc.Find("a[href]").Each(func(i int, s *goquery.Selection) {
+	doc.Find(".chapters a[href]").Each(func(i int, s *goquery.Selection) {
 		href, exists := s.Attr("href")
-		if !exists || !chapterRegex.MatchString(href) {
+		if !exists {
 			return
 		}
+
+		// If generic link regex match fails, skip
+		if !chapterRegex.MatchString(href) {
+			return
+		}
+
 		chapterURL := href
 		if !strings.HasPrefix(href, "http") {
 			chapterURL = "https://mangakatana.com" + href
@@ -61,7 +69,56 @@ func FetchMangaDetails(mangaURL string) (*domain.MangaDetails, error) {
 		}
 	})
 
+	// If no chapters found with specific selector, try generic (fallback)
+	if len(chapters) == 0 {
+		doc.Find("a[href]").Each(func(i int, s *goquery.Selection) {
+			href, exists := s.Attr("href")
+			if !exists || !chapterRegex.MatchString(href) {
+				return
+			}
+			chapterURL := href
+			if !strings.HasPrefix(href, "http") {
+				chapterURL = "https://mangakatana.com" + href
+			}
+			if seenChapters[chapterURL] {
+				return
+			}
+			chapterName := strings.TrimSpace(s.Text())
+			if chapterName != "" {
+				chapters = append(chapters, domain.Chapter{Name: chapterName, URL: chapterURL})
+				seenChapters[chapterURL] = true
+			}
+		})
+	}
+
+	// Sort chapters by number (ascending)
+	sort.Slice(chapters, func(i, j int) bool {
+		return parseChapterNumber(chapters[i].Name) < parseChapterNumber(chapters[j].Name)
+	})
+
 	return &domain.MangaDetails{Title: strings.TrimSpace(title), Chapters: chapters}, nil
+}
+
+func parseChapterNumber(name string) float64 {
+	// Extract number from "Chapter 10.5" or similar
+	re := regexp.MustCompile(`(?i)(?:chapter|ch\.?)\s*(\d+(?:\.\d+)?)`)
+	matches := re.FindStringSubmatch(name)
+	if len(matches) > 1 {
+		val, err := strconv.ParseFloat(matches[1], 64)
+		if err == nil {
+			return val
+		}
+	}
+	// Fallback: try to find any float in the string
+	re = regexp.MustCompile(`(\d+(?:\.\d+)?)`)
+	matches = re.FindStringSubmatch(name)
+	if len(matches) > 1 {
+		val, err := strconv.ParseFloat(matches[1], 64)
+		if err == nil {
+			return val
+		}
+	}
+	return 0
 }
 
 // ExtractImageURLs finds all image URLs on a chapter page.

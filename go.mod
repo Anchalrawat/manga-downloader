@@ -1,4 +1,4 @@
-module go-manga-ripper
+module mangadl
 
 go 1.25.4
 

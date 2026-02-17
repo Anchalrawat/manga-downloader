@@ -1,6 +1,6 @@
 package ui
 
-import "go-manga-ripper/internal/domain"
+import "mangadl/internal/domain"
 
 type MangaFetchedMsg *domain.MangaDetails
 type ErrMsg error

@@ -5,7 +5,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"go-manga-ripper/internal/ui"
+	"mangadl/internal/ui"
 )
 
 func main() {
