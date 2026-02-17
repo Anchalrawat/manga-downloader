@@ -65,6 +65,12 @@ GOOS=windows GOARCH=amd64 go build -o ripper.exe main.go
 GOOS=windows GOARCH=arm64 go build -o ripper.exe main.go
 ```
 
+**iSH (iOS) — emulates x86 Linux**
+
+```bash
+GOOS=linux GOARCH=386 go build -o ripper main.go
+```
+
 ## Usage
 
 ```bash
