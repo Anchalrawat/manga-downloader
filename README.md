@@ -70,9 +70,3 @@ GOOS=windows GOARCH=arm64 go build -o ripper.exe main.go
 ```bash
 GOOS=linux GOARCH=386 go build -o ripper main.go
 ```
-
-## Usage
-
-```bash
-./ripper <manga-url>
-```
